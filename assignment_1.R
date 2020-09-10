@@ -59,4 +59,24 @@ plot(epen_kern(logf12, h_hat2), type="l")
 lines(d4, col="red")
 
 
+library(tidyverse)
+library(microbenchmark)
+b <- microbenchmark(density(logf12, bw = h_hat2, kernel=c("epanechnikov")), epen_kern(logf12, h_hat2))
+autoplot(b)
 
+b2 <- microbenchmark(
+	epen_kern(logf12[1:10], h_hat2),
+	epen_kern(logf12[1:100], h_hat2),
+	epen_kern(logf12[1:n], h_hat2)
+)
+
+library(Rcpp)
+sourceCpp('density.cpp')
+g <- epan_den(logf12, .2)
+
+b3 <- microbenchmark(
+	density(logf12, bw = .2, kernel = "epanechnikov"),
+	epen_kern(logf12, h = .2),
+	epan_den(logf12, .2)
+)
+autoplot(b3)
