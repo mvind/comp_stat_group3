@@ -1,0 +1,191 @@
+---
+title: "Density Estimation"
+output: slidy_presentation
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+```{r echo=FALSE, warning=FALSE, include=FALSE}
+
+library(microbenchmark)
+library(tidyverse)
+library(Rcpp)
+```
+
+## The ingredients for density estimation
+
+- We have the Epanechnikov Kernel given as
+$$K(x) = \frac{3}{4}(1-x^2)1_{[-1,1]}(x)$$
+ 
+- We can then implement the density estimation of $K(x)$ using the following formula
+$$\hat{f}_h(x) = \frac{1}{hn}\sum_{j=0}^{n}K(\frac{x-x_j}{h})$$
+
+## Vectorized R implementation
+
+```{r, echo=TRUE}
+epan_kern_vec <- function(x, h, m = 512) {
+	rg = range(x)
+	xx <- seq(rg[1] - 3 * h, rg[2] + 3 * h, length.out = m)
+	y <- numeric(m)
+	
+	const = length(x) * h
+	y <- sapply(xx, function(z) sum( (abs((z-x)/h) <= 1) * (3/4 * (1 - ((z - x)/(h))^2)))) 
+	list(x = xx, y = y/const)
+}
+```
+- We use ``sapply`` to map all of the gridpoints over into the density estimation
+- We use the fact that the boolean test ```abs((z-x)/h) <= 1)``` gets coerced into a numeric value
+
+## Testing on infrared data
+```{r, echo=FALSE}
+infrared <- read.table("./infrared.dat", header = TRUE)
+f12 <- infrared$F12
+logf12 <- log(f12)
+```
+```{r, echo=TRUE}
+par(mfrow=c(1,2))
+d1 <- density(logf12, bw = .2, kernel = "epanechnikov")
+d2 <- epan_kern_vec(logf12, h = .2 * sqrt(5))
+plot(d1, main="Density estimation infrared data")
+lines(d2, col="blue")
+range(d1$y - d2$y, na.rm = T)
+plot(d1$y - d2$y, type="l", main="Error deviation")
+```
+
+## Benchmarking on simulated data
+```{r, echo=TRUE, warning=FALSE, error=FALSE}
+x <- rnorm(2^13)
+bench_epan_vec <- microbenchmark(
+	epan_kern_vec(x[1:32], 0.2 * sqrt(5)),
+	epan_kern_vec(x[1:64], 0.2 * sqrt(5)),
+	epan_kern_vec(x[1:128], 0.2 * sqrt(5)),
+	epan_kern_vec(x[1:264], 0.2 * sqrt(5)),
+	epan_kern_vec(x[1:512], 0.2 * sqrt(5)),
+	epan_kern_vec(x[1:1024], 0.2 * sqrt(5)),
+	epan_kern_vec(x[1:2048], 0.2 * sqrt(5)),
+	epan_kern_vec(x[1:4096], 0.2 * sqrt(5)),
+	epan_kern_vec(x, 0.2 * sqrt(5)), unit="us"
+)
+
+bench_dens <- microbenchmark(
+  density(x[1:32], 0.2, kernel = "epanechnikov"),
+  density(x[1:64], 0.2, kernel = "epanechnikov"),
+  density(x[1:128], 0.2, kernel = "epanechnikov"),
+  density(x[1:264], 0.2, kernel = "epanechnikov"),
+  density(x[1:512], 0.2, kernel = "epanechnikov"),
+  density(x[1:1024], 0.2, kernel = "epanechnikov"),
+  density(x[1:2048], 0.2, kernel = "epanechnikov"),
+  density(x[1:4096], 0.2, kernel = "epanechnikov"),
+  density(x, 0.2), unit = "us"
+  )
+
+```
+
+
+## Computational time
+```{r, echo=TRUE}
+bench_epan_vec_sum <- summary(bench_epan_vec)
+bench_dens_sum <- summary(bench_dens)
+times <- data.frame(x =  2^(5:13), "density" = bench_dens_sum$uq, "epan_kern_vec" = bench_epan_vec_sum$uq)
+times %>% ggplot(aes(x = log(x)))  + geom_line(aes(y = log(density)), col="red") + geom_line(aes(y = log(epan_kern_vec)), col="blue")
+```
+
+## Rccp implementation
+```{Rcpp, echo=TRUE}
+#include <Rcpp.h>
+using namespace Rcpp;
+using namespace std;
+
+// [[Rcpp::export]]
+NumericVector epan_den(NumericVector x, double h, int m = 512)
+{
+	int n = x.size();
+	
+	auto max = max_element(begin(x), end(x));
+	auto min = min_element(begin(x), end(x));
+	
+	NumericVector grid(m);
+	double l = abs(*max - *min);
+		
+	for(int i = 1; i < (m - 1); ++i) {
+			grid[i] =  *min + (l / m) * i;
+	}
+	grid[0] = *min;
+	grid[m - 1] = *max; 
+	
+	NumericVector y(m);
+	for(int i = 0; i < m; ++i) {
+		for(int j = 0; j < n; ++j) {
+			double u = (grid[i] - x[j]) / h;
+			if(fabs(u) <= 1.0) {
+				y[i] += 3 * (1 - pow(u, 2.0)) / (4);
+			}
+		}
+			y[i] = y[i] / (n * h);
+	}
+	
+	return y;
+}
+```
+## Benchmarking vs. density
+```{r, echo=TRUE, warning=FALSE, error=FALSE}
+sourceCpp('density.cpp')
+b <- microbenchmark(
+	density(logf12, bw = .2, kernel = "epanechnikov"),
+	epan_den(logf12, .2 * sqrt(5)),
+	epan_kern_vec(logf12, h = .2 * sqrt(5))
+)
+autoplot(b)
+```
+
+## Further optimization? 
+We can implement binning to prevent the $o(nm)$ grid evaluations.. to be done
+
+## Bandwidth selection
+- Plugin method using emperical variance and guessing using mean zero gaussian density
+$$h1_n =  (\frac{8\sqrt{\pi} ||K||_{2}^{2}}{3\sigma_{K}^{4}})^{1/5} \sigma n^{-1/5}$$
+We estimate $\sigma$ with the emperical variance. 
+
+## Bandwith calculation on infrared data
+First observe 
+$$\sigma_{K}^2 = \int z^2 (\frac{3}{4}(1-z^2)) dz = \frac{1}{5}$$
+And 
+$$||K||_{2}^{2} = \int (\frac{3}{4}(1-z^2))^2 dz = \frac{3}{5}$$
+We can now implement the bandwidth estimator
+```{r, echo=TRUE}
+sigma <- sd(logf12) # log transformed infrared data
+n <- length(logf12)
+h1n <- function(n) {
+	(((8 * sqrt(pi) * (3/5) ) / (3 * (1/5)^2 ))^(1/5)) * n^(-1/5) * sigma
+}
+h1 <- h1n(n)
+h1 / sqrt(5)
+
+```
+
+
+## Silverman thumb
+We substitue the emperical variance with 
+$$\tilde{\sigma} = min\{\hat{\sigma}, IQR/1.34\}$$
+```{r, echo=TRUE}
+sigma_tilde <- min(sd(logf12), IQR(logf12) / 1.34)
+h2n <- function(n) {
+	(((8 * sqrt(pi) * (3/5) ) / (3 * (1/5)^2 ))^(1/5)) * n^(-1/5) * sigma_tilde
+}
+h2 <- h2n(n)
+h2 / sqrt(5)
+```
+
+## Comparison wrt. density function
+```{r, echo=TRUE}
+d <- density(logf12, kernel = "epanechnikov")
+d1 <- density(logf12, bw=h1 / sqrt(5), kernel = "epanechnikov")
+d2 <- density(logf12, bw=h2 / sqrt(5), kernel = "epanechnikov")
+dens <- data.frame(x = d$x, 'bw_default' = d$y, 'bw_1' = d1$y, 'bw_2' = d2$y)
+dens %>% ggplot(aes(x = x)) + geom_line(aes(y = bw_default), col="red")+ 
+	geom_line(aes(y = bw_1), col="blue") + geom_line(aes(y = bw_2), col="green") +
+	 scale_color_manual(name = "Density Estimates", labels = c("Default", "Emperical Dev", "Silverman"))
+
+```
+
