@@ -199,6 +199,40 @@ h2
 h2 / sqrt(5)
 ```
 
+## Generalizing plugin method wtih a function factory
+We can build a generalized bandwidth selector using ``integrate``. 
+```{r, echo=TRUE}
+bw_select <- function(k) {
+	# We need to calculate the l2 squared norm and the variance 
+	if(!is.function(k))
+		stop('k needs to be a function!')
+	sig2 <- integrate(function(x) x^2 * k(x), -Inf, Inf)
+	k2 <- integrate(function(x) k(x)^2, -Inf, Inf)
+	
+	bw <- function(n, sigma_est) {
+		numerator <- 8 * sqrt(pi) * k2$value
+		denom <- 3 * sig2$value^2
+		(numerator / denom)^(1/5) * sigma_est * n^(-1/5)
+	}
+}
+
+```
+
+## Testing generalized function factory
+Note since the function argument k gets integrated on the entire real line we need to specify the kernel limits in the definitino of the kernel itself. 
+```{r, echo=TRUE}
+epan <- function(x) {
+	(abs(x) <= 1) * (3/4) * (1 - x^2) # vectorized because integrate is vectorized aswell
+}
+
+## First using emperical variance
+bw_epan <- bw_select(epan)
+
+## Test on infrared data
+all.equal(bw_epan(n, sd(logf12)), h1)
+all.equal(bw_epan(n, sigma_tilde), h2)
+```
+
 ## Comparison wrt. density function
 ```{r, echo=FALSE}
 d <- density(logf12, kernel = "epanechnikov")
